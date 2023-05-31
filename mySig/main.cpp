@@ -3,45 +3,21 @@
 #include<functional>
 #include<iostream>
 struct A {
-	mysig::Signal<> s;
-};
-void funcB(){}
-struct B {
-	void funcB(int layer) { 
-		auto aa = [this](int l) {
-			std::cout << "funcB" << l << std::endl;
-			if (l < 5)
-				funcB(l + 1);
-		};
-		mysig::UniversalFunction f(aa);
-		f((int)layer);
+	void funcA(int a, int b) {
+		std::cout <<"class in:" << a << " " << b << std::endl;
 	}
 };
-void test_Lists() {
-	std::cout <<"int float char:"<< mysig::QueueCompertor_v< mysig::TypeQueue<int, float, char>, mysig::TypeQueue<int, float, char>, mysig::equal_operation> << std::endl;//1
-	std::cout << "int float char:" << mysig::QueueCompertor_v< mysig::TypeQueue<int, float, char>, mysig::TypeQueue<int, float, int>, mysig::equal_operation> << std::endl;//0
-	std::cout << "int float char:" << mysig::QueueCompertor_v< mysig::TypeQueue<int, float, char>, mysig::TypeQueue<int, float, int,void>, mysig::equal_operation> << std::endl;//0
-	std::cout << "int float char:" << mysig::QueueCompertor_v< mysig::TypeQueue<int, float, decltype(&B::funcB)>, mysig::TypeQueue<int, float, decltype(&B::funcB)>, mysig::equal_operation> << std::endl;//1
-}
-void UniversalFunctiontest() {
-	using namespace mysig;
-}
+void func_free(){}
+
 int main() {
 	using namespace mysig;
-	test_Lists();
-	A a_obj; B b_obj;
-	auto aa = [&]() {std::cout << "22" << std::endl; };
-	connect(&a_obj, &A::s, &b_obj, &B::funcB);
-	connect(&a_obj, &A::s, &b_obj, [&]() {});
-	connect(&a_obj, &A::s, &b_obj, aa);
-	std::cout << "begin test UniversalFunction" << std::endl;
-	UniversalFunction f1([](int a, int  b) {std::cout <<"f1" << "a=" << a << "b=" << b << std::endl; });
-	UniversalFunction f2(&B::funcB,&b_obj);
-	UniversalFunction f3([](int a, int&  b) {std::cout <<"f3" << "a=" << a << "b=" << b << std::endl; });
-	int kk = 3;
-	f1(2, 3);
-	UniversalFunction f4(std::move(f1));
-	f1(2, 3);
-	f4(2, 3);
-	f2(0);
+	A a;
+	Base_Signal<int, int> base;
+	base.connect([](int a, int b) {std::cout << a << " " << b << std::endl; });
+	base.connect([](int a, int b) {std::cout << a << " " << b << std::endl; });
+	base.disconnect([](int a, int b) {std::cout << a << " " << b << std::endl; });
+	base.connect(&A::funcA,&a);
+	base.connect(&A::funcA, &a);
+	base.disconnect(&A::funcA, &a);
+	base.emit(3, 2);
 }
