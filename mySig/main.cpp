@@ -13,11 +13,14 @@ int main() {
 	using namespace mysig;
 	A a;
 	Base_Signal<int, int> base;
-	base.connect([](int a, int b) {std::cout << a << " " << b << std::endl; });
-	base.connect([](int a, int b) {std::cout << a << " " << b << std::endl; });
-	base.disconnect([](int a, int b) {std::cout << a << " " << b << std::endl; });
-	base.connect(&A::funcA,&a);
-	base.connect(&A::funcA, &a);
-	base.disconnect(&A::funcA, &a);
-	base.emit(3, 2);
+	connect(&base, &A::funcA, &a);
+	connect(&base, [](int a,int b) {std::cout << "lambda in:" << a << " " << b << std::endl; });
+	//base.emit(2, 3);
+	//disconnect(&base, &A::funcA, &a);
+	Base_Signal<int, int> base2;
+	connect(&base2, &A::funcA, &a);
+	base.emit(2, 3);
+	disconnect_all(&A::funcA, &a);
+	printf("after disconnect_all\n");
+	base.emit(2, 3);
 }

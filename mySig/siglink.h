@@ -71,6 +71,24 @@ namespace mysig {
 		return typeid(T).name();
 	}
 
+	template<class T>
+	class singleton {
+	public:
+		singleton(const singleton&) = delete;
+		singleton( singleton&&) = delete;
+		singleton& operator=(const singleton&) = delete;
+		singleton& operator=(singleton&&) = delete;
+		static T* GetInstance() {
+			static T ist;
+			instance = &ist;
+			return instance;
+		}
+	protected:
+		static T* instance;
+		singleton() = default;
+	};
+	template<class T>
+	T* singleton<T>::instance = nullptr;
 	/*需要用第一个类型与余下类型作匹配时，可以采用template<class Target, class First,class... Ty>
 	* 这样的三个类型参数的形式
 	*/
@@ -379,29 +397,41 @@ namespace mysig {
 		constexpr static std::size_t factor = 2654435769;
 		std::unique_ptr<Base_Function<Args...>> func;
 	};
-
+	template<class... Args>
+	struct Eventequal {
+		bool operator()(const  std::shared_ptr<EventWrapper<Args...>>& ew_l, const std::shared_ptr < EventWrapper<Args...>>& ew_r) const {
+			return  (*ew_l).operator==(*ew_r);
+		}
+	};
+	template<class... Args>
+	struct EventHash {
+		std::size_t operator()(const std::shared_ptr<EventWrapper<Args...>>& ew) const {
+			return ew->hash();
+		}
+	};
+	template<class... Args>
+	class Slot;
 	template<class... Args>
 	class Base_Signal {
 	public:
+		friend class Slot<Args...>;
 		using iterator =typename std::list<std::shared_ptr< EventWrapper<Args...>>>::iterator;
 		Base_Signal() = default;
 		template<class... F>
-		void connect(F&&... f) {
+		std::shared_ptr<EventWrapper<Args...>> connect(F&&... f) {
 			std::shared_ptr<EventWrapper<Args...>> e_now=std::make_shared<EventWrapper<Args...>>(std::forward<F>(f)...);
 			if (event_map.find(e_now) == event_map.end()) {
 				mes_q.push_back(e_now);
 				iterator it = mes_q.end();
 				event_map.insert({e_now ,--it });
 			}
+			return e_now;
 		}
 		template<class... F>
-		void disconnect(F&&... f){
+		std::shared_ptr<EventWrapper<Args...>> disconnect(F&&... f){
 			std::shared_ptr<EventWrapper<Args...>> e_now = std::make_shared<EventWrapper<Args...>>(std::forward<F>(f)...);
-			if (event_map.find(e_now) != event_map.end()) {
-				iterator it = event_map[e_now];
-				mes_q.erase(it);
-				event_map.erase(e_now);			
-			}
+			remove(e_now);
+			return e_now;
 		}
 		template<class... CallArgs>
 		void emit(CallArgs&&... args) {
@@ -409,19 +439,58 @@ namespace mysig {
 				(*(*it))(std::forward<CallArgs>(args)...);
 			}
 		}
-		struct Eventequal {
-			bool operator()(const  std::shared_ptr<EventWrapper<Args...>> & ew_l, const std::shared_ptr < EventWrapper<Args...>>& ew_r) const {
-				return  (*ew_l).operator==(*ew_r);
-			}
-		};
-		struct EventHash {
-			std::size_t operator()(const std::shared_ptr<EventWrapper<Args...>>& ew) const {
-				return ew->hash();
-			}
-		};
 	private:
+		bool remove(const std::shared_ptr<EventWrapper<Args...>>& ew) {
+			if (event_map.find(ew) != event_map.end()) {
+				iterator it = event_map[ew];
+				mes_q.erase(it);
+				event_map.erase(ew);
+				return true;
+			}
+			else return false;
+		}
 		std::list<std::shared_ptr<EventWrapper<Args...>>> mes_q;
-		std::unordered_map< std::shared_ptr<EventWrapper<Args...>>, iterator, EventHash, Eventequal> event_map;
+		std::unordered_map< std::shared_ptr<EventWrapper<Args...>>, iterator, EventHash<Args...>, Eventequal<Args...>> event_map;
 	};
+	template<class... Args>
+	class Slot : public singleton<Slot<Args...>> {
+	public:
+		Slot() = default;
+		void connect(const std::shared_ptr<EventWrapper<Args...>>& ew, Base_Signal<Args...>* sig) {
+			std::unordered_set<Base_Signal<Args...>*>& sig_set = sig_con[ew];
+			sig_set.insert(sig);
+		}
+		void disconnect(const std::shared_ptr<EventWrapper<Args...>>& ew, Base_Signal<Args...>* sig) {
+			std::unordered_set<Base_Signal<Args...>*>& sig_set = sig_con[ew];
+			if (sig_set.find(sig) == sig_set.end()) {
+				throw std::invalid_argument("can't disconnect signal doesn't exit");
+			}
+			sig_set.erase(sig);
+		}
+		void disconnect_all(const std::shared_ptr<EventWrapper<Args...>>& ew) {
+			std::unordered_set<Base_Signal<Args...>*>& sig_set = sig_con[ew];
+			for (Base_Signal<Args...>* it : sig_set) {
+				it->remove(ew);
+			}
+		}
+	private:
+		std::unordered_map<std::shared_ptr<EventWrapper<Args...>>, std::unordered_set<Base_Signal<Args...>*>, EventHash<Args...>, Eventequal<Args...>> sig_con;
+	};
+	template<class... Args,class... Left>
+	void connect(Base_Signal<Args...>* sig, Left&&... left) {
+		Slot<Args...> *slot = Slot<Args...>::GetInstance();
+		slot->connect(sig->connect(std::forward<Left>(left)...),sig);
+	}
+	template< class... Args, class... Left>
+	void disconnect( Base_Signal<Args...>* sig, Left&&... left) {
+		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		slot->disconnect(sig->disconnect(std::forward<Left>(left)...),sig);
+	}
+	template<class C,class R,class... Args>
+	void disconnect_all(R(C::* func_ptr)(Args...), C* obj_ptr) {
+		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<EventWrapper<Args...>> e_now = std::make_shared<EventWrapper<Args...>>(func_ptr,obj_ptr);
+		slot->disconnect_all(e_now);
+	}
 }
 #endif
