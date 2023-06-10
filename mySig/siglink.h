@@ -13,6 +13,7 @@
 #include<unordered_map>
 #include<unordered_set>
 #include<list>
+#include <typeinfo>
 namespace mysig {
 	/*Base class signal,*/
 
@@ -218,6 +219,17 @@ namespace mysig {
 	};
 	template<class T>
 	using function_Args_t = typename function_Args<T>::type;
+	template<class... CallArgs>
+	struct member_funtion_trait{
+		template<class... F>
+		constexpr static auto check(F&&... f) ->std::void_t<> {}
+		template<class R, class C, class... Args>
+		constexpr static auto check(R(C::* f)(Args...), C* ptr) -> C {}
+		constexpr static bool is_member_funtion_v(CallArgs&&... args) {
+			return !std::is_same_v< std::void_t<>, decltype(check(std::forward<CallArgs>(args)...))>;
+		}
+		constexpr static auto getType(CallArgs&&... args)->decltype(check(std::forward<CallArgs>(args)...)) {}
+	};	
 	/*参数裁剪相关
 	* 使用 trim_call()进行裁剪调用
 	*/
@@ -257,7 +269,7 @@ namespace mysig {
 	template<class... Args>
 	class Base_Function {
 	public:
-		using addr_type = typename std::uintptr_t;//类型别名要写在public中，否则默认private
+		using addr_type =  std::uintptr_t;//类型别名要写在public中，否则默认private
 		Base_Function():ft(Func_Type::None){}
 		explicit Base_Function(const Func_Type& f):ft(f){}
 		Base_Function(const Base_Function&) = delete;
@@ -322,6 +334,16 @@ namespace mysig {
 	private:	
 		R(*func_ptr)(Args...) ;
 	};
+	struct  EventId
+	{
+		Func_Type tp;
+		std::size_t hash_v;
+		std::vector<std::uintptr_t> addr;
+		std::function<bool(const EventId&)> op_equal;
+		template<class... F>
+		EventId(const Func_Type& t, std::size_t h,const std::vector<std::uintptr_t>& v,F&&... f)
+			:tp(t),hash_v(h),addr(v), op_equal(std::forward<F>(f)...){}
+	};
 	template<class... Args>
 	class EventWrapper {
 	public:
@@ -346,7 +368,7 @@ namespace mysig {
 			return *this;
 		}
 		template<class... CallArgs>
-		void operator()(CallArgs&& ...args) {
+		void operator()(CallArgs&& ...args) const{
 			trim_call([this, args...](auto&&... args) {(*func)(std::forward<decltype(args)>(args)...); },
 				TypeQueue<Args...>{}, std::forward<CallArgs>(args)...);
 		}
@@ -354,16 +376,17 @@ namespace mysig {
 			return func->ft;
 		}
 		bool operator==(const EventWrapper& ew) const{
-			if (this->Type() != ew.Type()) return false;
-			Func_Type tp = this->Type();
-			
 			std::vector<Base_Function<Args...>::addr_type> addr_vl = func->get_address();
 			std::vector<Base_Function<Args...>::addr_type> addr_vr = ew.func->get_address();
+			return isEqual(this->Type(), ew.Type(),addr_vl, addr_vr);
+		}
+		bool isEqual(const Func_Type& tp, const Func_Type& tp_r,const std::vector<typename Base_Function<Args...>::addr_type>&  addr_vl,const std::vector<typename Base_Function<Args...>::addr_type>&  addr_vr) const{
+			if (tp != tp_r) return false;
 			switch (tp) {
 			case Func_Type::Lambda: { return false; }break;//对于任意的lambda对象，均为不同事件
 			case Func_Type::MenberFunction: {
-			if (addr_vl[1] == addr_vr[1] && addr_vl[2] == addr_vr[2]) return true;
-			   else return false;
+				if (addr_vl[1] == addr_vr[1] && addr_vl[2] == addr_vr[2]) return true;
+				else return false;
 			}break;
 			case Func_Type::GlobalFunction: {
 				if (addr_vl[1] == addr_vr[1]) return true;
@@ -393,6 +416,10 @@ namespace mysig {
 			}
 			return addr_v[0] % factor;
 		}
+		EventId GetEventId() {
+			return EventId(this->Type(), this->hash(), func->get_address(), [&](const EventId& e)
+				{return isEqual(this->Type(), e.tp, func->get_address(), e.addr); });
+		}
 	private:
 		constexpr static std::size_t factor = 2654435769;
 		std::unique_ptr<Base_Function<Args...>> func;
@@ -409,14 +436,34 @@ namespace mysig {
 			return ew->hash();
 		}
 	};
+	//对EventId的偏特化版本
+	template<>
+	struct Eventequal<EventId> {
+		bool operator()(const EventId& ew_l, const EventId& ew_r) const {
+			return  ew_l.op_equal(ew_r);
+		}
+	};
+	template<>
+	struct EventHash <EventId> {
+		std::size_t operator()(const EventId& ew) const {
+			return ew.hash_v;
+		}
+	};
 	template<class... Args>
 	class Slot;
+	class Object;
 	template<class... Args>
 	class Base_Signal {
 	public:
 		friend class Slot<Args...>;
 		using iterator =typename std::list<std::shared_ptr< EventWrapper<Args...>>>::iterator;
 		Base_Signal() = default;
+		~Base_Signal() {
+			Slot<Args...>* slot = Slot<Args...>::GetInstance();
+			for (auto&& p : event_map) {
+				slot->disconnect(p.first, this);
+			}
+		}
 		template<class... F>
 		std::shared_ptr<EventWrapper<Args...>> connect(F&&... f) {
 			std::shared_ptr<EventWrapper<Args...>> e_now=std::make_shared<EventWrapper<Args...>>(std::forward<F>(f)...);
@@ -481,10 +528,28 @@ namespace mysig {
 		Slot<Args...> *slot = Slot<Args...>::GetInstance();
 		slot->connect(sig->connect(std::forward<Left>(left)...),sig);
 	}
+	template<class R,class C,class... Args>
+	void connect(Base_Signal<Args...>* sig,R(C::*func)(Args...),C* obj) {
+		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<EventWrapper<Args...>> ew = sig->connect(func,obj);
+		if constexpr (std::is_base_of_v<Object, C>) {
+			static_cast<Object*>(obj)->registe(ew);
+		}
+		slot->connect(ew, sig);
+	}
 	template< class... Args, class... Left>
 	void disconnect( Base_Signal<Args...>* sig, Left&&... left) {
 		Slot<Args...>* slot = Slot<Args...>::GetInstance();
 		slot->disconnect(sig->disconnect(std::forward<Left>(left)...),sig);
+	}
+	template<class R, class C, class... Args>
+	void disconnect(Base_Signal<Args...>* sig, R(C::* func)(Args...), C* obj) {
+		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<EventWrapper<Args...>> ew = sig->connect(func,obj);
+		if constexpr (std::is_base_of_v<Object, C>) {
+			static_cast<Object*>(obj)->cancle(ew);
+		}
+		slot->disconnect(ew, sig);
 	}
 	template<class C,class R,class... Args>
 	void disconnect_all(R(C::* func_ptr)(Args...), C* obj_ptr) {
@@ -492,5 +557,70 @@ namespace mysig {
 		std::shared_ptr<EventWrapper<Args...>> e_now = std::make_shared<EventWrapper<Args...>>(func_ptr,obj_ptr);
 		slot->disconnect_all(e_now);
 	}
+	template< class... Args>
+	void disconnect_all(const std::shared_ptr<EventWrapper<Args...>>& ev) {
+		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		slot->disconnect_all(ev);
+	}
+	template<class... Args>
+	class EventLoop {
+	public:
+		void start(int capacity) {
+			for (int i = 0; i < capacity; ++i) {
+				//threads.emplace_back(&loop, this);
+			}
+		}
+		void loop() {
+			while (is_run) {
+				std::unique_lock<std::mutex> lock(mut);
+				cv.wait(lock, [&]() {return !is_run || !event_list.empty(); });
+				auto&& node = event_list.back();
+				(*(*node))();
+			}
+		}
+		void submit(const std::shared_ptr<EventWrapper<Args...>>& ew ) {
+			std::unique_lock<std::mutex> lock(mut);
+			event_list.push_back(ew);
+			cv.notify_one();
+		}
+		template<class... CallArgs>
+		void trig(CallArgs&&... args) {
+			
+		}
+	private:
+		std::tuple<Args...> pra;
+		std::list<std::shared_ptr<EventWrapper<Args...>>> event_list;
+		std::mutex mut;
+		std::condition_variable cv;
+		bool is_run;
+	};
+/*自动管理管理connection的托管基类，当目标类继承Object类，则目标在销毁
+* 时会调用Object的析构函数，断开所有的signal和slot
+* 注意registe和cancle不直接处理连接和断开逻辑，它们应该由connect和diconnect
+* 直接调用
+* */
+	class Object {
+	public:
+		virtual ~Object(){
+			for (auto&& ew_pair : ew_map) {
+				(ew_pair.second)();
+			}
+		}
+		template<class... Args>
+		void registe( std::shared_ptr < EventWrapper<Args...>> ew) {	
+			EventId id = ew->GetEventId();
+			if (ew_map.find(id) == ew_map.end()) {
+				ew_map.insert({ std::move(id), EventWrapper<>([=]() {disconnect_all(ew); }) });
+			}	
+		}
+		template<class... Args>
+		void cancle(const std::shared_ptr < EventWrapper<Args...>>& ew) {
+			EventId id = ew->GetEventId();
+			if (ew_map.find(id) != ew_map.end()) {
+				ew_map.erase(id);
+			}
+		}
+		std::unordered_map<EventId, EventWrapper<>, EventHash<EventId>, Eventequal<EventId>> ew_map;
+	};
 }
 #endif
