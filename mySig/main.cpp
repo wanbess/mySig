@@ -12,11 +12,14 @@ void func_free(){}
 int main() {
 	using namespace mysig;
 	Base_Signal<int, int> base1;
+	A a2;
 	{
 		A a;
 		Base_Signal<int, int> base2;	
 		connect(&base2, &A::funcA, &a);
 		connect(&base1, &A::funcA, &a);
+		connect(&base2, &A::funcA, &a2);
+		connect(&base1, &A::funcA, &a2);
 		base2.emit(2, 3);
 		//disconnect_all(&A::funcA, &a);
 	}

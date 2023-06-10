@@ -607,7 +607,7 @@ namespace mysig {
 			}
 		}
 		template<class... Args>
-		void registe( std::shared_ptr < EventWrapper<Args...>> ew) {	
+		void registe(const std::shared_ptr < EventWrapper<Args...>>& ew) {	
 			EventId id = ew->GetEventId();
 			if (ew_map.find(id) == ew_map.end()) {
 				ew_map.insert({ std::move(id), EventWrapper<>([=]() {disconnect_all(ew); }) });
