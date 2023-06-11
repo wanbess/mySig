@@ -13,7 +13,7 @@
 #include<unordered_map>
 #include<unordered_set>
 #include<list>
-#include <typeinfo>
+#include<queue>
 namespace mysig {
 	/*Base class signal,*/
 
@@ -71,7 +71,7 @@ namespace mysig {
 	constexpr const char* class_tos() {
 		return typeid(T).name();
 	}
-
+	// singleton template class  单例模板类
 	template<class T>
 	class singleton {
 	public:
@@ -79,17 +79,33 @@ namespace mysig {
 		singleton( singleton&&) = delete;
 		singleton& operator=(const singleton&) = delete;
 		singleton& operator=(singleton&&) = delete;
-		static T* GetInstance() {
-			static T ist;
-			instance = &ist;
+		template<class... Args>
+		static void Initialize(Args&&... args) {
+			if (!instance) {
+				std::lock_guard<std::mutex> lock(mut);
+				  if (!instance) {
+					  instance = std::make_shared<T>(std::forward<Args>(args)...);
+				  }
+			}
+		}
+		template<class... Args>
+		static std::shared_ptr<T> GetInstance(Args&&... args) {
+			Initialize(std::forward<Args>(args)...);
 			return instance;
 		}
+		static void destroy() {
+			std::lock_guard<std::mutex> lock(mut);
+			instance.reset();
+		}
 	protected:
-		static T* instance;
+		static std::shared_ptr<T> instance;
+		static std::mutex mut;
 		singleton() = default;
 	};
 	template<class T>
-	T* singleton<T>::instance = nullptr;
+	std::shared_ptr<T> singleton<T>::instance = nullptr;
+	template<class T>
+	std::mutex singleton<T>::mut;
 	/*需要用第一个类型与余下类型作匹配时，可以采用template<class Target, class First,class... Ty>
 	* 这样的三个类型参数的形式
 	*/
@@ -255,7 +271,7 @@ namespace mysig {
 	void trim_call(Fun&& f, const TypeQueue<Args...>&, CallArgs&&... callargs) {
 		using ParamTrim_t = ParamTrim< Fun, CallArgs...>;
 		ParamTrim_t pt(std::forward<Fun>(f),std::forward<CallArgs>(callargs)...);
-		static_assert(ParamTrim_t::template value<Args...>, "CallArgs can't be conver to Args or has different length");
+		static_assert(ParamTrim_t::template value<Args...>, "CallArgs can't be converted to Args or has different length");
 		pt(std::index_sequence_for<Args...>{});
 	}
 	template<class... Args>
@@ -459,9 +475,12 @@ namespace mysig {
 		using iterator =typename std::list<std::shared_ptr< EventWrapper<Args...>>>::iterator;
 		Base_Signal() = default;
 		~Base_Signal() {
-			Slot<Args...>* slot = Slot<Args...>::GetInstance();
+			std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 			for (auto&& p : event_map) {
 				slot->disconnect(p.first, this);
+			}
+			if (!slot->has_signal()) {
+				Slot<Args...>::destroy();
 			}
 		}
 		template<class... F>
@@ -503,6 +522,9 @@ namespace mysig {
 	class Slot : public singleton<Slot<Args...>> {
 	public:
 		Slot() = default;
+		~Slot() {
+			std::cout << "SLot destroy" << std::endl;
+		}
 		void connect(const std::shared_ptr<EventWrapper<Args...>>& ew, Base_Signal<Args...>* sig) {
 			std::unordered_set<Base_Signal<Args...>*>& sig_set = sig_con[ew];
 			sig_set.insert(sig);
@@ -519,18 +541,22 @@ namespace mysig {
 			for (Base_Signal<Args...>* it : sig_set) {
 				it->remove(ew);
 			}
+			if (sig_set.empty()) {
+				sig_con.erase(ew);
+			}
 		}
+		bool has_signal() const { return !sig_con.empty(); }
 	private:
 		std::unordered_map<std::shared_ptr<EventWrapper<Args...>>, std::unordered_set<Base_Signal<Args...>*>, EventHash<Args...>, Eventequal<Args...>> sig_con;
 	};
 	template<class... Args,class... Left>
 	void connect(Base_Signal<Args...>* sig, Left&&... left) {
-		Slot<Args...> *slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		slot->connect(sig->connect(std::forward<Left>(left)...),sig);
 	}
 	template<class R,class C,class... Args>
 	void connect(Base_Signal<Args...>* sig,R(C::*func)(Args...),C* obj) {
-		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		std::shared_ptr<EventWrapper<Args...>> ew = sig->connect(func,obj);
 		if constexpr (std::is_base_of_v<Object, C>) {
 			static_cast<Object*>(obj)->registe(ew);
@@ -539,30 +565,42 @@ namespace mysig {
 	}
 	template< class... Args, class... Left>
 	void disconnect( Base_Signal<Args...>* sig, Left&&... left) {
-		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		slot->disconnect(sig->disconnect(std::forward<Left>(left)...),sig);
+		if (!slot->has_signal()){
+			Slot<Args...>::destroy(); 
+		}
 	}
 	template<class R, class C, class... Args>
 	void disconnect(Base_Signal<Args...>* sig, R(C::* func)(Args...), C* obj) {
-		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		std::shared_ptr<EventWrapper<Args...>> ew = sig->connect(func,obj);
 		if constexpr (std::is_base_of_v<Object, C>) {
 			static_cast<Object*>(obj)->cancle(ew);
 		}
 		slot->disconnect(ew, sig);
+		if (!slot->has_signal()) {
+			Slot<Args...>::destroy();
+		}
 	}
 	template<class C,class R,class... Args>
 	void disconnect_all(R(C::* func_ptr)(Args...), C* obj_ptr) {
-		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		std::shared_ptr<EventWrapper<Args...>> e_now = std::make_shared<EventWrapper<Args...>>(func_ptr,obj_ptr);
 		slot->disconnect_all(e_now);
+		if (!slot->has_signal()) {
+			Slot<Args...>::destroy();
+		}
 	}
 	template< class... Args>
 	void disconnect_all(const std::shared_ptr<EventWrapper<Args...>>& ev) {
-		Slot<Args...>* slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
 		slot->disconnect_all(ev);
+		if (!slot->has_signal()) {
+			Slot<Args...>::destroy();
+		}
 	}
-	template<class... Args>
+	template<class Policy>
 	class EventLoop {
 	public:
 		void start(int capacity) {
@@ -577,19 +615,16 @@ namespace mysig {
 				auto&& node = event_list.back();
 				(*(*node))();
 			}
-		}
-		void submit(const std::shared_ptr<EventWrapper<Args...>>& ew ) {
+		} 
+		template<class... Args,class... CallArgs>
+		void submit(const std::shared_ptr<EventWrapper<Args...>>& ew, CallArgs&&... args) {
 			std::unique_lock<std::mutex> lock(mut);
-			event_list.push_back(ew);
+			event_list.emplace([ew, args...]() {(*ew)(std::forward<CallArgs>(args)...); });
 			cv.notify_one();
 		}
-		template<class... CallArgs>
-		void trig(CallArgs&&... args) {
-			
-		}
+
 	private:
-		std::tuple<Args...> pra;
-		std::list<std::shared_ptr<EventWrapper<Args...>>> event_list;
+		std::queue<EventWrapper<>> event_list;
 		std::mutex mut;
 		std::condition_variable cv;
 		bool is_run;
