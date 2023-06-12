@@ -609,34 +609,67 @@ namespace mysig {
 			Slot<Args...>::destroy();
 		}
 	}
-	template<class Policy>
+	enum class LoopPolicy {
+		Continue,
+		Asynic_user,
+		Threadpool,
+	};
 	class EventLoop {
-	public:
+	public: 
+		explicit EventLoop(LoopPolicy lp):is_run(false), lp(lp){}
+		EventLoop():is_run(false), lp(LoopPolicy::Continue){}
+		~EventLoop() {
+			if (lp == LoopPolicy::Threadpool) {
+				std::unique_lock<std::mutex> lock(mut);
+				is_run = false;
+				cv.notify_all();
+			}
+		}
 		void start(int capacity) {
-			for (int i = 0; i < capacity; ++i) {
-				//threads.emplace_back(&loop, this);
+			if (lp == LoopPolicy::Threadpool) {
+				is_run = true;
+				for (int i = 0; i < capacity; ++i) {
+					threads.emplace_back(&EventLoop::loop,this);
+				}
 			}
 		}
 		void loop() {
 			while (is_run) {
 				std::unique_lock<std::mutex> lock(mut);
 				cv.wait(lock, [&]() {return !is_run || !event_list.empty(); });
-				auto&& node = event_list.back();
-				(*(*node))();
+				EventWrapper<> callback = std::move( event_list.front());
+				event_list.pop();
+				lock.unlock();
+				callback();
 			}
 		} 
 		template<class... Args,class... CallArgs>
-		void submit(const std::shared_ptr<EventWrapper<Args...>>& ew, CallArgs&&... args) {
+		void submit(Base_Signal<Args...>& sig, CallArgs&&... args) {
+			if (lp == LoopPolicy::Continue) {
+				for (auto& ew : sig.event_map) {
+					(ew.first)(std::forward<CallArgs>(args)...);
+				}
+			}
+			else if (lp == LoopPolicy::Threadpool) {
+				for (auto& ew : sig.event_map) {
+					this->put(ew, std::forward<CallArgs>(args)...);
+				}
+			}
+		}
+		template<class... Args,class... CallArgs>
+		void put(const std::shared_ptr<EventWrapper<Args...>>& ew, CallArgs&&... args) {
 			std::unique_lock<std::mutex> lock(mut);
 			event_list.emplace([ew, args...]() {(*ew)(std::forward<CallArgs>(args)...); });
 			cv.notify_one();
 		}
 
 	private:
+		std::vector<std::thread> threads;
 		std::queue<EventWrapper<>> event_list;
 		std::mutex mut;
 		std::condition_variable cv;
 		bool is_run;
+		LoopPolicy lp;
 	};
 /*自动管理管理connection的托管基类，当目标类继承Object类，则目标在销毁
 * 时会调用Object的析构函数，断开所有的signal和slot
@@ -664,6 +697,7 @@ namespace mysig {
 				ew_map.erase(id);
 			}
 		}
+
 		std::unordered_map<EventId, EventWrapper<>, EventHash<EventId>, Eventequal<EventId>> ew_map;
 	};
 }
