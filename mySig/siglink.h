@@ -93,6 +93,9 @@ namespace mysig {
 			Initialize(std::forward<Args>(args)...);
 			return instance;
 		}
+		static std::shared_ptr<T> TryInstance() {
+			return instance;
+		}
 		static void destroy() {
 			std::lock_guard<std::mutex> lock(mut);
 			instance.reset();
@@ -475,7 +478,8 @@ namespace mysig {
 		using iterator =typename std::list<std::shared_ptr< EventWrapper<Args...>>>::iterator;
 		Base_Signal() = default;
 		~Base_Signal() {
-			std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
+			std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::TryInstance();
+			if (!slot) return;
 			for (auto&& p : event_map) {
 				slot->disconnect(p.first, this);
 			}
@@ -535,15 +539,16 @@ namespace mysig {
 				throw std::invalid_argument("can't disconnect signal doesn't exit");
 			}
 			sig_set.erase(sig);
+			if (sig_set.empty()) {
+				sig_con.erase(ew);
+			}
 		}
 		void disconnect_all(const std::shared_ptr<EventWrapper<Args...>>& ew) {
 			std::unordered_set<Base_Signal<Args...>*>& sig_set = sig_con[ew];
 			for (Base_Signal<Args...>* it : sig_set) {
 				it->remove(ew);
 			}
-			if (sig_set.empty()) {
-				sig_con.erase(ew);
-			}
+			sig_con.erase(ew);
 		}
 		bool has_signal() const { return !sig_con.empty(); }
 	private:
@@ -565,7 +570,8 @@ namespace mysig {
 	}
 	template< class... Args, class... Left>
 	void disconnect( Base_Signal<Args...>* sig, Left&&... left) {
-		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::TryInstance();
+		if (!slot) return;
 		slot->disconnect(sig->disconnect(std::forward<Left>(left)...),sig);
 		if (!slot->has_signal()){
 			Slot<Args...>::destroy(); 
@@ -573,7 +579,8 @@ namespace mysig {
 	}
 	template<class R, class C, class... Args>
 	void disconnect(Base_Signal<Args...>* sig, R(C::* func)(Args...), C* obj) {
-		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::TryInstance();
+		if (!slot) return;
 		std::shared_ptr<EventWrapper<Args...>> ew = sig->connect(func,obj);
 		if constexpr (std::is_base_of_v<Object, C>) {
 			static_cast<Object*>(obj)->cancle(ew);
@@ -585,7 +592,8 @@ namespace mysig {
 	}
 	template<class C,class R,class... Args>
 	void disconnect_all(R(C::* func_ptr)(Args...), C* obj_ptr) {
-		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::TryInstance();
+		if (!slot) return;
 		std::shared_ptr<EventWrapper<Args...>> e_now = std::make_shared<EventWrapper<Args...>>(func_ptr,obj_ptr);
 		slot->disconnect_all(e_now);
 		if (!slot->has_signal()) {
@@ -594,7 +602,8 @@ namespace mysig {
 	}
 	template< class... Args>
 	void disconnect_all(const std::shared_ptr<EventWrapper<Args...>>& ev) {
-		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::GetInstance();
+		std::shared_ptr<Slot<Args...>> slot = Slot<Args...>::TryInstance();
+		if (!slot) return;
 		slot->disconnect_all(ev);
 		if (!slot->has_signal()) {
 			Slot<Args...>::destroy();
