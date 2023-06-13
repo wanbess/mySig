@@ -614,6 +614,7 @@ namespace mysig {
 		Asynic_user,
 		Threadpool,
 	};
+	//参考muduo中one thread per loop的设计
 	class EventLoop {
 	public: 
 		explicit EventLoop(LoopPolicy lp):is_run(false), lp(lp){}
@@ -623,14 +624,6 @@ namespace mysig {
 				std::unique_lock<std::mutex> lock(mut);
 				is_run = false;
 				cv.notify_all();
-			}
-		}
-		void start(int capacity) {
-			if (lp == LoopPolicy::Threadpool) {
-				is_run = true;
-				for (int i = 0; i < capacity; ++i) {
-					threads.emplace_back(&EventLoop::loop,this);
-				}
 			}
 		}
 		void loop() {
@@ -664,12 +657,63 @@ namespace mysig {
 		}
 
 	private:
-		std::vector<std::thread> threads;
+		std::thread::id thread_id;
 		std::queue<EventWrapper<>> event_list;
 		std::mutex mut;
 		std::condition_variable cv;
 		bool is_run;
 		LoopPolicy lp;
+	};
+	class EventThread {
+	public:
+		EventThread(std::function<void(EventLoop*)> c):callback(c), 
+			th(&EventThread::excute,this){}
+		std::shared_ptr<EventLoop> getEventLoop() {
+			std::shared_ptr<EventLoop> t_loop = loop.lock();
+			if (!t_loop) {
+				std::unique_lock<std::mutex> lock(mut);
+				cv.wait(lock, [&]() {t_loop=loop.lock(); return t_loop!=nullptr; });
+			}
+			return t_loop;
+		}
+	private:
+
+		void excute() {
+			std::shared_ptr<EventLoop> now_loop(new EventLoop());
+			if (callback) {
+				if (auto loop_ptr = loop.lock()) {
+					callback(loop_ptr.get());
+				}
+			}
+			std::unique_lock<std::mutex> lock(mut);
+			loop = now_loop;
+			cv.notify_one();
+			now_loop->loop();
+		}
+		std::thread th;
+		std::mutex mut;
+		std::condition_variable cv;
+		std::weak_ptr<EventLoop> loop;
+		std::function<void(EventLoop*)> callback;
+ 	};
+	class EventLoopPool {
+	public:
+		EventLoopPool(int c):capacity(c){}
+		void start() {
+			for (int i = 0; i < capacity; ++i) {
+				std::unique_ptr<EventThread> t(new EventThread());
+			}
+		}
+		void registe(EventLoop* loop) {
+			std::thread::id nowid = std::this_thread::get_id();
+			if (loop_map.find(nowid) != loop_map.end()) {
+				loop_map.insert({ nowid ,loop });
+			}
+		}
+	private:
+		int capacity;
+		std::vector<std::unique_ptr<EventThread>> threads;
+		std::unordered_map<std::thread::id,EventLoop*> loop_map;
 	};
 /*自动管理管理connection的托管基类，当目标类继承Object类，则目标在销毁
 * 时会调用Object的析构函数，断开所有的signal和slot
