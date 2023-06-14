@@ -15,24 +15,11 @@
 #include<list>
 #include<queue>
 namespace mysig {
-	/*Base class signal,*/
-
-	/*
-* 要点1：使用SFINAE进行函数模板推导时,如果SFINAE是谓词，可考虑通过返回std::false_type来进行实现，
-* 同时采样尾递归的方式
-* 要点2：SFINAE函数模板推导时，模板参数与类模板参数不相干，最好不同命名
-* 判断F(Args...)类型时，应使用std::declval<Ty>()(std::declval<Args>()...因为std::declval<Ty>()
-* 能直接构造右值引用，而不用创建对象
-* 要点3：当想对变参模型作SFINAE操作时，由于class = std::enable_if_t<>只能放在最后，与变参模板冲突，所以
-* 解决方法为首先显示声明类模板参数
-* 易错：enable_if_t<>里面接收的第一个参数为bool类型，不能直接用来进行“类型存在”判断
-* 想进行这种判断需要利用 auto func () -> delctype(  ,  )
-*/
 /*
-*  obj_function_traits用来匹配类成员函数指针，lambda对象，但不匹配自由函数指针
-*
-*
-* 参数类型：R--返回类型 C--仿函数类型  Args--形参列表类型
+*  obj_function_traitsUsed to match class member function pointers,
+lambda objects, but not free function pointers
+Parameter type: R--return type C--functor type Args--formal 
+parameter list type
 */
 	template<class F, class = void>
 	struct obj_function_traits {
@@ -71,7 +58,7 @@ namespace mysig {
 	constexpr const char* class_tos() {
 		return typeid(T).name();
 	}
-	// singleton template class  单例模板类
+	// singleton template class that can control its own lifetime 
 	template<class T>
 	class singleton {
 	public:
@@ -109,9 +96,7 @@ namespace mysig {
 	std::shared_ptr<T> singleton<T>::instance = nullptr;
 	template<class T>
 	std::mutex singleton<T>::mut;
-	/*需要用第一个类型与余下类型作匹配时，可以采用template<class Target, class First,class... Ty>
-	* 这样的三个类型参数的形式
-	*/
+// usage: is_oneofAll<T,Args...>,Determine whether T is one of the Args... type
 	template<class ...>
 	struct oneofAll {};
 	template<class Target>
@@ -131,18 +116,17 @@ namespace mysig {
 	public:
 		static constexpr  bool value = decltype(judge<Ty>(0))::value;
 	};
-	// 模板参数常数用constexpr ，类中用constexpr static
 	template<class Ty, class... Args>
 	constexpr bool is_Callable = Callable< Ty, Args...>::value;
-	/* TypeQueue类型队列，可以对列表中类型进行以下操作：
-	* 弹出队首，弹出队尾，压入队首，压入队尾，寻找下标为k的元素
+	/* TypeQueue you can perform the following operations on the types 
+	in the list: Pop the head of the queue, pop the tail of the queue, 
+	push the head of the queue, push the tail of the queue, and find the 
+	element with the subscript k
 	*/
 	template<class... Ty>
 	struct TypeQueue {};
 	template<class Queue>
 	struct EmptyType {};
-	//主模板的参数包必须在末尾，而特化版本不用，注意主模板的类型参数实际与特化版本的实参对应，而
-	//特化版本的模板参数无须这种对应
 	template<class Queue, class Ele>
 	struct Pushback_TypeQueue {};
 	template<class... Ty, class Ele>
@@ -155,7 +139,7 @@ namespace mysig {
 	struct FrontType<TypeQueue<Ele, Ty...>> {
 		using type = Ele;
 	};
-	// 处理空类型队列中队首元素
+	// void TypeQueue
 	template<>
 	struct FrontType<TypeQueue<>> {
 		using type = EmptyType<TypeQueue<>>;
@@ -172,7 +156,6 @@ namespace mysig {
 		using type = First;
 		static constexpr bool value = false;
 	};
-	// 空类型没有type成员
 	template<>
 	struct EmptyType<TypeQueue<>> {
 		static constexpr bool value = true;
@@ -180,10 +163,11 @@ namespace mysig {
 
 	template<class Queue>
 	constexpr bool is_empty_v = EmptyType<Queue>::value;
-	/*QueueCompertor< QueueLeft, QueueRight,Operation>对QueuLeft和QueuRight的每个元素
-	* 检查其类型，若QueuLeft的每个元素与QueuRight相同，则value为1，同时该比较器将萃取
-	* 类型，若QueuLeft的每个元素与QueuRight相同，则类型为is_empty<>,否则为第一个不相同
-	* 的元素对 QueueType<L,R>
+	/*QueueCompertor<QueueLeft, QueueRight,Operation> for each element of QueuLeft 
+	and QueuRight Check its type, if each element of QueuLeft is the same as QueuRight,
+	then the value is 1, and the comparator will extract Type, if each element of 
+	QueuLeft is the same as QueuRight, the type is is_empty<>, otherwise the first one is 
+	different Element pairs of QueueType<L,R>
 	*/
 	template<class QueueLeft, class QueueRight, template<class T, class U>class Operation,
 		bool empty = is_empty_v<QueueLeft> || is_empty_v<QueueRight>>
@@ -210,7 +194,7 @@ namespace mysig {
 		static constexpr bool value = std::is_same_v<T, U>;
 	};
 	template<class T, class U>
-	struct convert_operation {//判断类型U是否能转换到T，注意这里不能交换顺序
+	struct convert_operation {//Determine whether the type U can be converted to T
 		static constexpr bool value = std::is_convertible_v<U, T>;
 	};
 	template<class QueueLeft, class QueueRight, template<class T, class U>class Operation>
@@ -219,8 +203,8 @@ namespace mysig {
 	constexpr bool is_QueueType_include = QueueCompertor_v< QueueLeft, QueueRight, convert_operation>;
 	template<class QueueLeft, class QueueRight>
 	constexpr bool is_QueueType_same = is_QueueType_include<QueueLeft, QueueRight> && is_QueueType_include<QueueRight, QueueLeft>;
-	/*萃取可调用对象的形参列表类型,可调用对象F的operator()具有 R(C::*)(Args...)形式
-	* 返回类型为TypeQueue<Args...>
+	/*Extract the parameter list type of the callable object, the operator() of the callable 
+	object F has the form of R(C::*)(Args...)The return type is TypeQueue<Args...>
 	 */
 	template<class T, class = void>
 	struct function_Args {};
@@ -229,7 +213,7 @@ namespace mysig {
 		using type = typename function_Args<decltype(&T::operator())>::type;
 	};
 	template<class R, class T, class... Args>
-	struct function_Args<R(T::*)(Args...) const> {//lambda对象的operator()函数为const类型
+	struct function_Args<R(T::*)(Args...) const> {//The operator() function of the lambda object is of const type
 		using type = TypeQueue<Args...>;
 	};
 	template<class R, class... Args>
@@ -262,7 +246,7 @@ namespace mysig {
 		}
 		template<class... Args>
 		static constexpr bool checkType() {
-			//判断CallArgs...中的部分能否被隐式转换为Args...
+		//Determine whether  CallArgs... types can be implicitly converted to Args...
 			return is_QueueType_include<TypeQueue<Args...>, TypeQueue<CallArgs...>>;
 		}
 		std::tuple<CallArgs...> t;
@@ -288,7 +272,7 @@ namespace mysig {
 	template<class... Args>
 	class Base_Function {
 	public:
-		using addr_type =  std::uintptr_t;//类型别名要写在public中，否则默认private
+		using addr_type =  std::uintptr_t;
 		Base_Function():ft(Func_Type::None){}
 		explicit Base_Function(const Func_Type& f):ft(f){}
 		Base_Function(const Base_Function&) = delete;
@@ -402,7 +386,7 @@ namespace mysig {
 		bool isEqual(const Func_Type& tp, const Func_Type& tp_r,const std::vector<typename Base_Function<Args...>::addr_type>&  addr_vl,const std::vector<typename Base_Function<Args...>::addr_type>&  addr_vr) const{
 			if (tp != tp_r) return false;
 			switch (tp) {
-			case Func_Type::Lambda: { return false; }break;//对于任意的lambda对象，均为不同事件
+			case Func_Type::Lambda: { return false; }break;//Any lambda object is a different event
 			case Func_Type::MenberFunction: {
 				if (addr_vl[1] == addr_vr[1] && addr_vl[2] == addr_vr[2]) return true;
 				else return false;
@@ -455,7 +439,7 @@ namespace mysig {
 			return ew->hash();
 		}
 	};
-	//对EventId的偏特化版本
+	//A partial specialization for EventId
 	template<>
 	struct Eventequal<EventId> {
 		bool operator()(const EventId& ew_l, const EventId& ew_r) const {
@@ -614,11 +598,15 @@ namespace mysig {
 		Asynic_user,
 		Threadpool,
 	};
-	//参考muduo中one thread per loop的设计
+// one thread per loop. The creation of EventLoop is completed by external thread 
+// because  thread holds all of resource of  EventLoop. EventLoop must be 
+// designed to allow to its own thread to carry on task and other threads
+// to steal task from the loop.
+//
 	class EventLoop {
 	public: 
-		explicit EventLoop(LoopPolicy lp):is_run(false), lp(lp){}
-		EventLoop():is_run(false), lp(LoopPolicy::Continue){}
+		explicit EventLoop(LoopPolicy lp):is_run(false), lp(lp), thread_id(std::this_thread::get_id()) {}
+		EventLoop():is_run(false), lp(LoopPolicy::Continue), thread_id(std::this_thread::get_id()){}
 		~EventLoop() {
 			if (lp == LoopPolicy::Threadpool) {
 				std::unique_lock<std::mutex> lock(mut);
@@ -651,9 +639,15 @@ namespace mysig {
 		}
 		template<class... Args,class... CallArgs>
 		void put(const std::shared_ptr<EventWrapper<Args...>>& ew, CallArgs&&... args) {
-			std::unique_lock<std::mutex> lock(mut);
-			event_list.emplace([ew, args...]() {(*ew)(std::forward<CallArgs>(args)...); });
-			cv.notify_one();
+			if (std::this_thread::get_id() == thread_id) {
+				event_list.emplace([ew, args...]() {(*ew)(std::forward<CallArgs>(args)...); });
+				cv.notify_one();
+			}
+			else {
+				std::unique_lock<std::mutex> lock(mut);
+			}
+			
+			
 		}
 
 	private:
@@ -715,10 +709,11 @@ namespace mysig {
 		std::vector<std::unique_ptr<EventThread>> threads;
 		std::unordered_map<std::thread::id,EventLoop*> loop_map;
 	};
-/*自动管理管理connection的托管基类，当目标类继承Object类，则目标在销毁
-* 时会调用Object的析构函数，断开所有的signal和slot
-* 注意registe和cancle不直接处理连接和断开逻辑，它们应该由connect和diconnect
-* 直接调用
+/*Automatically manage the managed base class of the connection, when the target class
+* inherits the Object class, the target is destroyed When the destructor of Object is 
+* called, all signals and slots are disconnected Note that registe and cancle do not 
+* directly handle connection and disconnection logic, they should be handled by connect
+* and diconnect direct call
 * */
 	class Object {
 	public:
